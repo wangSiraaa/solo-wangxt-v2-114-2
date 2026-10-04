@@ -4,7 +4,7 @@ import { api } from "../api.js";
 function Mg(kg) { return (kg / 1000).toFixed(2); }
 
 export default function EstimatePanel({ ctx }) {
-  const { t1, t2 } = ctx;
+  const { t1, t2, chains } = ctx;
   const [equations, setEquations] = useState([]);
   const [selected, setSelected] = useState([]);
   const [versions, setVersions] = useState([]);
@@ -12,6 +12,13 @@ export default function EstimatePanel({ ctx }) {
   const [detail, setDetail] = useState(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+
+  const intervals = (chains[0]?.intervals || []).filter((i) => i.is_adjacent);
+  const [intervalId, setIntervalId] = useState(null);
+  useEffect(() => {
+    if (intervals.length && intervalId == null)
+      setIntervalId(intervals[intervals.length - 1].id);
+  }, [chains]);
 
   async function loadVersions() {
     setVersions(await api.estimates());
@@ -32,11 +39,13 @@ export default function EstimatePanel({ ctx }) {
   async function runDraft() {
     setBusy(true); setErr("");
     try {
-      const d = await api.createEstimate({
+      const body = {
         label: `Draft ${new Date().toISOString().slice(0, 16)}`,
-        t1_campaign: t1, t2_campaign: t2,
         equation_ids: selected, fpc: true,
-      });
+      };
+      if (intervalId != null) body.interval_id = intervalId;
+      else { body.t1_campaign = t1; body.t2_campaign = t2; }
+      const d = await api.createEstimate(body);
       await loadVersions();
       setOpenId(d.id);
     } catch (e) { setErr(e.message); }
@@ -83,8 +92,29 @@ export default function EstimatePanel({ ctx }) {
             </span>
           </label>
         ))}
-        <button disabled={busy || !selected.length} onClick={runDraft}>
-          Run draft estimate ({t1} → {t2})
+        <div className="pair-picker">
+          {intervals.length > 0 && (
+            <>
+              interval:{" "}
+              {intervals.map((i) => (
+                <button key={i.id}
+                        className={intervalId === i.id ? "tab active" : "tab"}
+                        onClick={() => setIntervalId(i.id)}>
+                  {i.t1} → {i.t2}
+                  {i.coverage !== "covered" && ` (${i.coverage})`}
+                </button>
+              ))}
+            </>
+          )}
+        </div>
+        <button disabled={busy || !selected.length ||
+                         (intervals.length > 0 && intervalId == null)}
+                onClick={runDraft}>
+          Run draft estimate
+          {intervalId != null
+            ? ` (${intervals.find((i) => i.id === intervalId)?.t1} → ` +
+              `${intervals.find((i) => i.id === intervalId)?.t2})`
+            : ` (${t1} → ${t2})`}
         </button>
       </section>
 
@@ -96,6 +126,8 @@ export default function EstimatePanel({ ctx }) {
               <tr key={v.id} className={v.status}
                   onClick={() => setOpenId(v.id)}>
                 <td>#{v.id}</td><td>{v.label}</td>
+                <td>{v.t1_code && v.t2_code
+                  ? `${v.t1_code} → ${v.t2_code}` : ""}</td>
                 <td className={`status-${v.status}`}>{v.status}</td>
                 <td>{v.confirmed_at
                   ? new Date(v.confirmed_at).toLocaleString() : ""}</td>

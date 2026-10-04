@@ -31,4 +31,15 @@ export const api = {
   estimate: (id) => get(`/estimates/${id}/`),
   createEstimate: (payload) => post("/estimates/", payload),
   confirmEstimate: (id) => post(`/estimates/${id}/confirm/`),
+  // multi-period survey sequences
+  sequences: () => get("/sequences/"),
+  sequence: (id) => get(`/sequences/${id}/`),
+  createSequence: (payload) => post("/sequences/", payload),
+  syncSequence: (id, payload) => post(`/sequences/${id}/sync/`, payload),
+  intervalProvenance: (id) => get(`/intervals/${id}/provenance/`),
+  recomputeInterval: (id, payload) =>
+    post(`/intervals/${id}/recompute/`, payload),
+  plotTimeline: (seqId, plotCode) =>
+    get(`/sequences/${seqId}/plots/${encodeURIComponent(plotCode)}/timeline/`),
+  treeTimeline: (treeId) => get(`/trees/${treeId}/timeline/`),
 };

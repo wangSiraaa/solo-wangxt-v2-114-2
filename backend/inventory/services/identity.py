@@ -107,9 +107,14 @@ def pair_measurements(t1_rows, t2_rows, tolerance_m=POSITION_TOLERANCE_M,
                               "hint": "same_number_position_mismatch"})
             u1.add(r1["tree_id"])
             u2.add(r2["tree_id"])
-        # Left-over extra rows are held for verification.
+        # Left-over extra rows are held for verification — except a row
+        # already recorded DEAD at t1: a dead tree leaves no t2 record by
+        # definition, its removal was accounted when it died, and its label
+        # living on at t2 is the earlier interval's conflict, not a new one.
         for r1 in open1:
             if r1["tree_id"] not in u1:
+                if r1["status"] == "dead":
+                    continue
                 conflicts.append({"t1": r1, "t2": None, "distance_m": None,
                                   "hint": "same_label_extra_row"})
                 excluded_t1.add(r1["tree_id"])

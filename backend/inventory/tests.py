@@ -22,6 +22,7 @@ from inventory.models import (
     Campaign,
     CONFLICT_OPEN,
     EstimateVersion,
+    IdentityConflict,
     Plot,
     Species,
     Stratum,
@@ -305,3 +306,349 @@ class EstimatorAcceptanceTests(TestCase):
         self.assertIn("estimator", res["design"])
         self.assertTrue(res["uncertainty_assumptions"])
         self.assertIn("OAK", res["equations_used"])
+
+
+# ---------------------------------------------------------------------------
+# Multi-period survey sequences (2019 -> 2024 -> 2029)
+# ---------------------------------------------------------------------------
+MI = "missing_tree"
+
+
+class SurveySequenceAcceptanceTests(TestCase):
+    """
+    Acceptance for the third remeasurement: adjacent-interval chain,
+    interval-scoped identity, idempotent backfill, frozen confirmed editions.
+    """
+
+    def setUp(self):
+        self.sA = Stratum.objects.create(code="A", name="A", area_ha=100.0)
+        self.oak = Species.objects.create(code="OAK", name="Oak")
+        self.eq = AllometricEquation.objects.create(
+            code="OAK", version="1", status="confirmed",
+            a=0.1, b=2.0, c=0.5, dbh_min_cm=5.0, dbh_max_cm=100.0,
+            residual_sigma=0.1, citation="fictional")
+        self.eq.species.add(self.oak)
+        self.c19 = Campaign.objects.create(code="2019",
+                                           measured_on="2019-07-01")
+        self.c24 = Campaign.objects.create(code="2024",
+                                           measured_on="2024-07-01")
+        self.c29 = Campaign.objects.create(code="2029",
+                                           measured_on="2029-07-01")
+        self.pA = Plot.objects.create(
+            code="PA", stratum=self.sA, x_m=0, y_m=0,
+            declared_area_ha=0.10, boundary=rect(0, 0, 50, 20),
+            area_polygon_ha=0.10)
+        self.pB = Plot.objects.create(
+            code="PB", stratum=self.sA, x_m=0, y_m=0,
+            declared_area_ha=0.25, boundary=rect(0, 0, 50, 50),
+            area_polygon_ha=0.25)
+        self.client = APIClient()
+
+        def row(plot, num, x, y, status, dbh=None, h=None):
+            return dict(plot=plot, field_number=num, species="OAK",
+                        x_m=x, y_m=y, status=status,
+                        dbh_raw=dbh, dbh_unit="cm" if dbh is not None else None,
+                        height_raw=h, height_unit="m" if h is not None else None)
+        self._row = row
+
+        # 2019 census
+        import_campaign_rows(self.c19, [
+            row("PA", "1", 5, 5, AM, 20.0, 15.0),
+            row("PA", "2", 10, 5, AM, 18.0, 14.0),
+            row("PA", "3", 15, 5, AM, 22.0, 16.0),
+            row("PB", "1", 5, 5, AM, 25.0, 17.0),
+        ], 0.01)
+        # 2024 remeasurement: PA/2 NOT LOCATED (missing_tree)
+        import_campaign_rows(self.c24, [
+            row("PA", "1", 5, 5, AM, 21.0, 15.0),
+            row("PA", "2", 10, 5, MI),
+            row("PA", "3", 15, 5, AM, 23.0, 16.0),
+            row("PB", "1", 5, 5, AM, 26.0, 17.0),
+        ], 0.01)
+
+        # legacy two-period confirmed edition (created BEFORE any sequence)
+        r = self.client.post("/api/estimates/",
+                             dict(label="original 2019→2024",
+                                  t1_campaign="2019", t2_campaign="2024",
+                                  equation_ids=[self.eq.id], fpc=False),
+                             format="json")
+        self.assertEqual(r.status_code, 201, r.content)
+        self.v1_id = r.json()["id"]
+        rc = self.client.post(f"/api/estimates/{self.v1_id}/confirm/")
+        self.assertEqual(rc.status_code, 200, rc.content)
+        self.v1_snapshot = self.client.get(
+            f"/api/estimates/{self.v1_id}/").json()
+
+        # sequence covering 2019 -> 2024
+        r = self.client.post("/api/sequences/",
+                             {"name": "main", "campaigns": ["2019", "2024"]},
+                             format="json")
+        self.assertEqual(r.status_code, 201, r.content)
+        self.seq_id = r.json()["id"]
+
+    # ---- helpers ----------------------------------------------------------
+    def _import_2029(self):
+        """The third remeasurement batch."""
+        return self.client.post("/api/imports/", {
+            "campaign": "2029",
+            "rows": [
+                self._row("PA", "1", 5, 5, AM, 22.0, 15.0),
+                # gap: missing 2024, back 2029 at the same spot
+                self._row("PA", "2", 10, 5, AM, 19.0, 14.0),
+                self._row("PA", "3", 15, 5, DE),
+                # renumber candidate: old tag PB/1 gone, new tag 101 close by
+                self._row("PB", "101", 5.4, 5.2, AM, 27.0, 17.0),
+                self._row("PB", "2", 40, 40, AM, 6.0, 5.0),   # ingrowth
+            ]}, format="json")
+
+    def _sync(self, **kw):
+        return self.client.post(f"/api/sequences/{self.seq_id}/sync/",
+                                kw, format="json")
+
+    def _interval(self, t1, t2):
+        from inventory.models import SurveyInterval
+        return SurveyInterval.objects.get(t1_campaign__code=t1,
+                                          t2_campaign__code=t2)
+
+    def _chain(self):
+        return self.client.get(f"/api/sequences/{self.seq_id}/").json()
+
+    # ---- (a) adding 2029 only adds the latter interval's estimate ---------
+    def test_adding_2029_only_adds_latter_interval_estimate(self):
+        n_versions_before = EstimateVersion.objects.count()
+        r = self._import_2029()
+        self.assertEqual(r.status_code, 200, r.content)
+        r = self._sync(run_estimates=True)
+        self.assertEqual(r.status_code, 200, r.content)
+
+        # exactly ONE new estimate version, belonging to 2024->2029
+        self.assertEqual(EstimateVersion.objects.count(),
+                         n_versions_before + 1)
+        new_v = EstimateVersion.objects.exclude(pk=self.v1_id).get()
+        self.assertEqual(new_v.t1_campaign.code, "2024")
+        self.assertEqual(new_v.t2_campaign.code, "2029")
+        self.assertEqual(new_v.interval, self._interval("2024", "2029"))
+        self.assertEqual(new_v.status, "draft")
+
+        # the chain: two adjacent intervals, no 2019->2029 stitching
+        chain = self._chain()
+        self.assertEqual([(i["t1"], i["t2"]) for i in chain["intervals"]],
+                         [("2019", "2024"), ("2024", "2029")])
+        from inventory.models import SurveyInterval
+        self.assertFalse(SurveyInterval.objects.filter(
+            t1_campaign=self.c19, t2_campaign=self.c29).exists())
+        # interval 2019->2024 keeps exactly its legacy confirmed edition
+        i1 = next(i for i in chain["intervals"] if i["t1"] == "2019")
+        self.assertEqual([v["id"] for v in i1["versions"]], [self.v1_id])
+        self.assertEqual(i1["versions"][0]["status"], "confirmed")
+        # and the confirmed edition is byte-identical (see dedicated test)
+        self.assertEqual(
+            self.client.get(f"/api/estimates/{self.v1_id}/").json(),
+            self.v1_snapshot)
+
+    # ---- (b) gap reappearance is not survivor growth ----------------------
+    def test_gap_reappearance_not_counted_as_survivor_growth(self):
+        self._import_2029()
+        self._sync(run_estimates=True)
+        from inventory.models import IntervalIdentityLink, Tree
+        i2 = self._interval("2024", "2029")
+        tree2 = Tree.objects.get(plot=self.pA, current_field_number="2")
+        link = IntervalIdentityLink.objects.get(interval=i2, tree=tree2)
+        self.assertEqual(link.kind, "gap_reappearance")
+        self.assertTrue(link.pending)
+
+        # the 2024->2029 draft must not count PA/2 as survivor growth,
+        # mortality or ingrowth — it is listed as unverified/missing only
+        v = EstimateVersion.objects.get(interval=i2)
+        pa = next(p for p in v.result_payload["provenance"]["plots"]
+                  if p["plot"] == "PA")
+        listed = {t["tree"] for key in ("mortality", "ingrowth")
+                  for t in pa[key]}
+        self.assertNotIn("PA/2", listed)
+        not_counted = {t["tree"] for t in pa["alive_not_measured"]}
+        self.assertIn("PA/2", not_counted)
+        # growth on PA comes from PA/1 alone (PA/3 died in 2029)
+        b = lambda d: 0.1 * d ** 2 * 15 ** 0.5
+        self.assertAlmostEqual(pa["kg"]["survivor_growth"],
+                               b(22.0) - b(21.0), places=3)
+        # mortality on PA is PA/3 at its 2024 size (height 16 m)
+        self.assertAlmostEqual(pa["kg"]["mortality"],
+                               0.1 * 23.0 ** 2 * 16 ** 0.5, places=3)
+
+    # ---- (c) 2029 renumber candidate is scoped to its interval ------------
+    def test_2029_renumber_conflict_scoped_to_its_interval(self):
+        self._import_2029()
+        self._sync()
+        from inventory.models import IntervalIdentityLink
+        # conflict exists ONLY for 2024->2029
+        confs = IdentityConflict.objects.filter(field_number="1")
+        self.assertEqual(confs.count(), 1)
+        conf = confs.get()
+        self.assertEqual((conf.t1_campaign.code, conf.t2_campaign.code),
+                         ("2024", "2029"))
+        self.assertEqual(conf.status, CONFLICT_OPEN)
+        # interval 2019->2024 has NO pending item for PB/1
+        i1 = self._interval("2019", "2024")
+        pb1 = self.client.get("/api/trees/",
+                              {"plot": "PB"}).json()
+        tree_pb1 = [t for t in pb1 if t["current_field_number"] == "1"][0]
+        links_i1 = IntervalIdentityLink.objects.filter(
+            interval=i1, tree_id=tree_pb1["id"])
+        self.assertEqual([(l.kind, l.pending) for l in links_i1],
+                         [("survivor", False)])
+        # interval 2024->2029 holds the pending pair (old row + new row)
+        i2 = self._interval("2024", "2029")
+        pending = IntervalIdentityLink.objects.filter(
+            interval=i2, kind="identity_conflict", pending=True)
+        self.assertEqual(pending.count(), 2)
+        # and the old PB/1 is NOT mortality while unverified
+        v = EstimateVersion.objects.filter(interval=i2)
+        self.assertFalse(v.exists())  # sync without run_estimates
+        self._sync(run_estimates=True)
+        v = EstimateVersion.objects.get(interval=i2)
+        pb = next(p for p in v.result_payload["provenance"]["plots"]
+                  if p["plot"] == "PB")
+        self.assertEqual(pb["mortality"], [])
+        # PB/101 is NOT ingrowth while unverified; only the genuine new
+        # recruit PB/2 enters ingrowth
+        self.assertEqual([i["tree"] for i in pb["ingrowth"]], ["PB/2"])
+        excluded = {c["tree"] for c in pb["excluded_identity_conflicts"]}
+        self.assertIn("PB/1", excluded)
+        # both tree rows carry a pending link in this interval
+        self.assertEqual(pending.count(), 2)
+
+    # ---- (d) re-import / retry does not duplicate -------------------------
+    def test_reimport_and_retry_do_not_duplicate(self):
+        from inventory.models import IntervalIdentityLink, SurveyInterval
+        self._import_2029()
+        self._sync(run_estimates=True)
+
+        def counts():
+            return dict(
+                intervals=SurveyInterval.objects.count(),
+                links=IntervalIdentityLink.objects.count(),
+                conflicts=IdentityConflict.objects.count(),
+                versions=EstimateVersion.objects.count(),
+                trees=Tree.objects.count(),
+                measurements=TreeMeasurement.objects.count(),
+            )
+
+        before = counts()
+        # same batch retransmitted (idempotent ingest), then a failed-run
+        # retry of the sync with the same options
+        r = self._import_2029()
+        self.assertEqual(r.status_code, 200, r.content)
+        self._sync(run_estimates=True)
+        self._sync(run_estimates=True)
+        self.assertEqual(counts(), before)
+        # interval provenance is stable too
+        i2 = self._interval("2024", "2029")
+        p1 = self.client.get(f"/api/intervals/{i2.id}/provenance/").json()
+        self._sync(run_estimates=True)
+        p2 = self.client.get(f"/api/intervals/{i2.id}/provenance/").json()
+        self.assertEqual(len(p1["identity"]["links"]),
+                         len(p2["identity"]["links"]))
+        self.assertEqual([v["id"] for v in p1["versions"]],
+                         [v["id"] for v in p2["versions"]])
+
+    # ---- (e) the confirmed 2019->2024 edition survives everything ---------
+    def test_confirmed_edition_untouched_by_2029_work(self):
+        self._import_2029()
+        self._sync(run_estimates=True)
+        # recompute BOTH intervals and confirm the new draft
+        i1 = self._interval("2019", "2024")
+        i2 = self._interval("2024", "2029")
+        self.client.post(f"/api/intervals/{i1.id}/recompute/",
+                         {"run_estimate": True,
+                          "equation_ids": [self.eq.id]}, format="json")
+        r = self.client.post(f"/api/intervals/{i2.id}/recompute/",
+                             {"run_estimate": True,
+                              "equation_ids": [self.eq.id]}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        draft2 = (EstimateVersion.objects.filter(interval=i2)
+                  .order_by("-created_at").first())
+        self.client.post(f"/api/estimates/{draft2.id}/confirm/")
+
+        after = self.client.get(f"/api/estimates/{self.v1_id}/").json()
+        self.assertEqual(after, self.v1_snapshot)
+        self.assertEqual(after["result_payload"],
+                         self.v1_snapshot["result_payload"])
+        self.assertEqual(after["design_snapshot"],
+                         self.v1_snapshot["design_snapshot"])
+        self.assertEqual(after["status"], "confirmed")
+
+    # ---- non-adjacent stitching is refused --------------------------------
+    def test_direct_2019_2029_estimate_is_refused(self):
+        self._import_2029()
+        self._sync()
+        r = self.client.post("/api/estimates/",
+                             dict(label="stitched", t1_campaign="2019",
+                                  t2_campaign="2029",
+                                  equation_ids=[self.eq.id]),
+                             format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("not an adjacent interval", r.json()["detail"])
+
+    # ---- sequence creation is idempotent ----------------------------------
+    def test_sequence_create_is_idempotent(self):
+        r = self.client.post("/api/sequences/",
+                             {"name": "main",
+                              "campaigns": ["2019", "2024"]}, format="json")
+        self.assertEqual(r.status_code, 200)  # not 201
+        self.assertEqual(r.json()["id"], self.seq_id)
+        from inventory.models import SurveyInterval
+        self.assertEqual(SurveyInterval.objects.count(), 1)
+
+    # ---- interval provenance + recompute API ------------------------------
+    def test_interval_provenance_and_recompute(self):
+        self._import_2029()
+        self._sync(run_estimates=True)
+        i2 = self._interval("2024", "2029")
+        p = self.client.get(f"/api/intervals/{i2.id}/provenance/").json()
+        self.assertEqual(p["interval"]["coverage"], "covered")
+        self.assertEqual(p["sources"]["t2"]["campaign"], "2029")
+        self.assertEqual(p["sources"]["t2"]["measurements"], 5)
+        self.assertEqual(p["sources"]["t2"]["import_rows_accepted"], 5)
+        pending_kinds = {l["kind"] for l in p["identity"]["pending"]}
+        self.assertIn("gap_reappearance", pending_kinds)
+        self.assertIn("identity_conflict", pending_kinds)
+        self.assertEqual(len(p["versions"]), 1)
+        self.assertTrue(p["versions"][0]["linked"])
+
+        # recompute refreshes in place; a requested estimate is a NEW draft
+        r = self.client.post(f"/api/intervals/{i2.id}/recompute/",
+                             {"run_estimate": True,
+                              "equation_ids": [self.eq.id]}, format="json")
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()["outcome"]["coverage"], "covered")
+        self.assertEqual(EstimateVersion.objects.filter(interval=i2).count(),
+                         2)
+        # recompute of interval 1 never alters the confirmed legacy edition
+        i1 = self._interval("2019", "2024")
+        self.client.post(f"/api/intervals/{i1.id}/recompute/", {},
+                         format="json")
+        self.assertEqual(
+            self.client.get(f"/api/estimates/{self.v1_id}/").json(),
+            self.v1_snapshot)
+
+    # ---- timeline APIs -----------------------------------------------------
+    def test_plot_and_tree_timeline(self):
+        self._import_2029()
+        self._sync(run_estimates=True)
+        tl = self.client.get(
+            f"/api/sequences/{self.seq_id}/plots/PA/timeline/").json()
+        self.assertEqual([c["code"] for c in tl["campaigns"]],
+                         ["2019", "2024", "2029"])
+        self.assertEqual(tl["intervals"], ["2019→2024", "2024→2029"])
+        t2row = next(t for t in tl["trees"]
+                     if t["current_field_number"] == "2")
+        self.assertEqual(t2row["occasions"]["2024"]["status"], "missing_tree")
+        self.assertEqual(
+            t2row["intervals"]["2024→2029"]["kind"], "gap_reappearance")
+        self.assertTrue(t2row["intervals"]["2024→2029"]["pending"])
+
+        one = self.client.get(f"/api/trees/{t2row['tree_id']}/timeline/").json()
+        self.assertEqual([o["campaign"] for o in one["occasions"]],
+                         ["2019", "2024", "2029"])
+        self.assertEqual(one["interval_links"][-1]["kind"],
+                         "gap_reappearance")

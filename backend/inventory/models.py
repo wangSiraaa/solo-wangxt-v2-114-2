@@ -69,6 +69,49 @@ VERSION_STATUS_CHOICES = [
     (VERSION_SUPERSEDED, "Superseded by a newer confirmed version"),
 ]
 
+# ------------------------------------------------------- multi-period chain
+# Interval coverage: does the remeasurement actually reach both endpoints?
+COVERAGE_PENDING = "pending"    # far end not measured yet (planned campaign)
+COVERAGE_PARTIAL = "partial"    # some plots measured at both ends
+COVERAGE_COVERED = "covered"    # every plot measured at both ends
+COVERAGE_CHOICES = [
+    (COVERAGE_PENDING, "Pending — far-end campaign has no data yet"),
+    (COVERAGE_PARTIAL, "Partial — some plots lack measurements"),
+    (COVERAGE_COVERED, "Covered — every plot measured at both ends"),
+]
+
+# Per-interval identity determinations. A link is the interval-scoped
+# statement "this individual plays this role between t1 and t2". Identity
+# relations NEVER span more than one interval: a tree missing at the middle
+# campaign and reappearing later is a pending gap link, not a survivor.
+LINK_SURVIVOR = "survivor"                       # paired, measured both ends
+LINK_SURVIVOR_RENUMBER = "survivor_renumber"     # paired via verified renumber
+LINK_SURVIVOR_UNMEASURED = "survivor_unmeasured"  # alive, dbh missing one end
+LINK_MORTALITY = "mortality"
+LINK_NOT_LOCATED = "not_located"                 # missing_tree / vanished
+LINK_INGROWTH = "ingrowth"
+LINK_BELOW_RECRUITMENT = "below_recruitment"
+LINK_GAP_REAPPEARANCE = "gap_reappearance"   # missing at t1, alive at t2
+LINK_RESURRECTED = "resurrected"             # dead at t1, alive at t2
+LINK_IDENTITY_CONFLICT = "identity_conflict"  # open contradiction this interval
+LINK_KIND_CHOICES = [
+    (LINK_SURVIVOR, "Survivor (measured both ends)"),
+    (LINK_SURVIVOR_RENUMBER, "Survivor via verified renumber"),
+    (LINK_SURVIVOR_UNMEASURED, "Survivor with missing measurement"),
+    (LINK_MORTALITY, "Mortality"),
+    (LINK_NOT_LOCATED, "Not located"),
+    (LINK_INGROWTH, "Ingrowth (reached threshold this interval)"),
+    (LINK_BELOW_RECRUITMENT, "Below recruitment threshold"),
+    (LINK_GAP_REAPPEARANCE, "PENDING — reappeared after a missing occasion"),
+    (LINK_RESURRECTED, "PENDING — recorded dead, later alive"),
+    (LINK_IDENTITY_CONFLICT, "PENDING — unverified identity this interval"),
+]
+PENDING_LINK_KINDS = {
+    LINK_GAP_REAPPEARANCE,
+    LINK_RESURRECTED,
+    LINK_IDENTITY_CONFLICT,
+}
+
 
 class Stratum(models.Model):
     """Sampling stratum with known land area (the sampling frame)."""
@@ -352,6 +395,11 @@ class EstimateVersion(models.Model):
       * result_payload + equation_checksum are frozen.
     A later new allometric equation creates a NEW version; the confirmed
     one can never be silently changed.
+
+    ``interval`` links the edition to one adjacent survey interval. Legacy
+    editions created before sequences existed keep interval=NULL and are
+    matched to intervals read-time by their (t1, t2) campaigns — they are
+    never rewritten.
     """
 
     label = models.CharField(max_length=120)
@@ -360,6 +408,11 @@ class EstimateVersion(models.Model):
     )
     t2_campaign = models.ForeignKey(
         Campaign, on_delete=models.PROTECT, related_name="estimate_t2"
+    )
+    interval = models.ForeignKey(
+        "SurveyInterval", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="estimate_versions",
+        help_text="Adjacent survey interval this edition belongs to.",
     )
     equations = models.ManyToManyField(AllometricEquation, related_name="estimates")
     status = models.CharField(
@@ -392,3 +445,145 @@ class EstimateVersion(models.Model):
 
     def __str__(self):
         return f"{self.label} [{self.status}]"
+
+
+# ---------------------------------------------------------------------------
+# Multi-period survey sequences: an ordered chain of campaigns with one
+# traceable interval per ADJACENT pair. Identity relations, coverage and
+# estimate editions are stored per interval; nothing ever stitches t1 of one
+# interval directly to t2 of another.
+# ---------------------------------------------------------------------------
+class SurveySequence(models.Model):
+    """An ordered chain of measurement campaigns (the remeasurement series)."""
+
+    name = models.CharField(max_length=80, unique=True)
+    campaigns = models.ManyToManyField(
+        Campaign, through="SequenceCampaign", related_name="sequences"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def ordered_campaigns(self):
+        return [m.campaign for m in
+                self.memberships.select_related("campaign").order_by("position")]
+
+    def __str__(self):
+        return self.name
+
+
+class SequenceCampaign(models.Model):
+    """Membership of a campaign in a sequence, with its chain position."""
+
+    sequence = models.ForeignKey(
+        SurveySequence, on_delete=models.CASCADE, related_name="memberships"
+    )
+    campaign = models.ForeignKey(
+        Campaign, on_delete=models.CASCADE, related_name="sequence_memberships"
+    )
+    position = models.PositiveIntegerField()
+
+    class Meta:
+        unique_together = [("sequence", "campaign"), ("sequence", "position")]
+        ordering = ["position"]
+
+    def __str__(self):
+        return f"{self.sequence.name}#{self.position}: {self.campaign.code}"
+
+
+class SurveyInterval(models.Model):
+    """
+    One adjacent campaign pair inside a sequence (e.g. 2024 -> 2029).
+
+    Stores its own coverage status, identity determinations (via
+    IntervalIdentityLink) and estimate editions (EstimateVersion.interval),
+    so 2019->2024 and 2024->2029 each carry their own growth / mortality /
+    ingrowth / pending items. Intervals are created idempotently
+    (unique per sequence+t1+t2) and never deleted by sync — a pair that
+    stops being adjacent is kept with is_adjacent=False for traceability.
+    """
+
+    sequence = models.ForeignKey(
+        SurveySequence, on_delete=models.CASCADE, related_name="intervals"
+    )
+    t1_campaign = models.ForeignKey(
+        Campaign, on_delete=models.PROTECT, related_name="intervals_as_t1"
+    )
+    t2_campaign = models.ForeignKey(
+        Campaign, on_delete=models.PROTECT, related_name="intervals_as_t2"
+    )
+    position = models.PositiveIntegerField(
+        help_text="Chain order of this interval at creation."
+    )
+    coverage = models.CharField(
+        max_length=10, choices=COVERAGE_CHOICES, default=COVERAGE_PENDING
+    )
+    is_adjacent = models.BooleanField(
+        default=True,
+        help_text="False when a later campaign insertion made this pair "
+                  "non-adjacent; kept for traceability, never rewritten.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = [("sequence", "t1_campaign", "t2_campaign")]
+        ordering = ["sequence", "position"]
+
+    @property
+    def interval_years(self):
+        days = (self.t2_campaign.measured_on
+                - self.t1_campaign.measured_on).days
+        return round(days / 365.25, 3)
+
+    def __str__(self):
+        return (f"{self.sequence.name}: {self.t1_campaign.code}→"
+                f"{self.t2_campaign.code} [{self.coverage}]")
+
+
+class IntervalIdentityLink(models.Model):
+    """
+    The identity determination of ONE individual within ONE interval.
+
+    Persisted per interval so a pending verification chain survives
+    recomputation and is visible per interval: gap reappearances, possible
+    renumbers and position contradictions stay open links until a human
+    resolves the corresponding IdentityConflict. Rebuilt idempotently
+    (unique per interval+tree) — re-imports and retries never duplicate.
+    """
+
+    interval = models.ForeignKey(
+        SurveyInterval, on_delete=models.CASCADE, related_name="identity_links"
+    )
+    tree = models.ForeignKey(
+        Tree, on_delete=models.CASCADE, related_name="interval_links"
+    )
+    counterpart_tree = models.ForeignKey(
+        Tree, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="+",
+        help_text="The other tree row involved (conflict/renumber pairs).",
+    )
+    t1_measurement = models.ForeignKey(
+        TreeMeasurement, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="+"
+    )
+    t2_measurement = models.ForeignKey(
+        TreeMeasurement, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="+"
+    )
+    kind = models.CharField(max_length=24, choices=LINK_KIND_CHOICES)
+    pending = models.BooleanField(
+        default=False,
+        help_text="True while human verification is required; pending links "
+                  "are excluded from every estimate component.",
+    )
+    note = models.CharField(max_length=240, blank=True)
+
+    class Meta:
+        unique_together = [("interval", "tree")]
+        ordering = ["interval", "tree__plot__code",
+                    "tree__current_field_number"]
+
+    def __str__(self):
+        return (f"{self.interval} · {self.tree}: {self.kind}"
+                f"{' (pending)' if self.pending else ''}")

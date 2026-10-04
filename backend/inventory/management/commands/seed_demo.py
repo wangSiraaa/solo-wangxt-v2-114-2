@@ -163,10 +163,13 @@ class Command(BaseCommand):
     @transaction.atomic
     def handle(self, *args, **options):
         from inventory.models import (
-            EstimateVersion, IdentityConflict, MeasurementImportRow,
-            Tree, TreeMeasurement,
+            EstimateVersion, IdentityConflict, IntervalIdentityLink,
+            MeasurementImportRow, SequenceCampaign, SurveyInterval,
+            SurveySequence, Tree, TreeMeasurement,
         )
-        models = [EstimateVersion, IdentityConflict, MeasurementImportRow,
+        models = [EstimateVersion, IntervalIdentityLink, SurveyInterval,
+                  SequenceCampaign, SurveySequence, IdentityConflict,
+                  MeasurementImportRow,
                   TreeMeasurement, Tree, Plot, Campaign,
                   AllometricEquation, Species, Stratum]
         for m in models:
@@ -304,4 +307,33 @@ class Command(BaseCommand):
                 f"{f.get('t2_field_number')} d={f['distance_m']}m "
                 f"[{f['hint']}]")
 
+        # ---- multi-period chain: sequence + adjacent interval 2019->2024 --
+        from inventory.services.sequence import (
+            get_or_create_sequence, sync_sequence,
+        )
+        seq, _ = get_or_create_sequence("main")
+        summary = sync_sequence(seq, extra_campaign_codes=["2019", "2024"])
+        self.stdout.write(
+            f"sequence 'main': intervals {summary['created_intervals']} "
+            f"refreshed {summary['refreshed_intervals']}")
+
+        # ---- confirmed baseline edition for 2019 -> 2024 -------------------
+        # Frozen from the start so the demo shows that later campaigns never
+        # rewrite a confirmed interval edition.
+        from inventory.views import _run_estimate_for
+        interval = seq.intervals.get(t1_campaign=t1, t2_campaign=t2)
+        baseline = _run_estimate_for(
+            t1, t2,
+            AllometricEquation.objects.filter(status="confirmed"),
+            label="baseline 2019→2024 (confirmed)", fpc=True,
+            interval=interval)
+        baseline.status = "confirmed"
+        from django.utils import timezone
+        baseline.confirmed_at = timezone.now()
+        baseline.save()
+        self.stdout.write(
+            f"confirmed baseline edition #{baseline.id} for 2019→2024")
+
         self.stdout.write(self.style.SUCCESS("seed complete"))
+        self.stdout.write(
+            "next: python3 manage.py seed_2029  # third remeasurement")

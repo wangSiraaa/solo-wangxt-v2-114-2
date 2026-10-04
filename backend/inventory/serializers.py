@@ -5,9 +5,12 @@ from inventory.models import (
     Campaign,
     EstimateVersion,
     IdentityConflict,
+    IntervalIdentityLink,
     Plot,
     Species,
     Stratum,
+    SurveyInterval,
+    SurveySequence,
     Tree,
     TreeMeasurement,
 )
@@ -109,17 +112,61 @@ class ConflictResolveSerializer(serializers.Serializer):
 
 
 class EstimateVersionSerializer(serializers.ModelSerializer):
+    t1_code = serializers.CharField(source="t1_campaign.code", read_only=True)
+    t2_code = serializers.CharField(source="t2_campaign.code", read_only=True)
+
     class Meta:
         model = EstimateVersion
         fields = [
-            "id", "label", "t1_campaign", "t2_campaign", "status",
+            "id", "label", "t1_campaign", "t2_campaign", "t1_code", "t2_code",
+            "interval", "status",
             "design_snapshot", "result_payload", "equation_checksum",
             "created_at", "confirmed_at",
         ]
         read_only_fields = [
             "status", "design_snapshot", "result_payload",
-            "equation_checksum", "confirmed_at",
+            "equation_checksum", "confirmed_at", "interval",
         ]
+
+
+class SurveyIntervalSerializer(serializers.ModelSerializer):
+    t1_code = serializers.CharField(source="t1_campaign.code", read_only=True)
+    t2_code = serializers.CharField(source="t2_campaign.code", read_only=True)
+    interval_years = serializers.ReadOnlyField()
+
+    class Meta:
+        model = SurveyInterval
+        fields = [
+            "id", "sequence", "t1_campaign", "t2_campaign",
+            "t1_code", "t2_code", "interval_years", "position",
+            "coverage", "is_adjacent", "created_at",
+        ]
+        read_only_fields = fields
+
+
+class SurveySequenceSerializer(serializers.ModelSerializer):
+    campaigns = CampaignSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = SurveySequence
+        fields = ["id", "name", "campaigns", "created_at"]
+        read_only_fields = ["campaigns", "created_at"]
+
+
+class IntervalIdentityLinkSerializer(serializers.ModelSerializer):
+    plot_code = serializers.CharField(source="tree.plot.code", read_only=True)
+    label_t1 = serializers.CharField(source="t1_measurement.field_number_seen",
+                                     read_only=True, default=None)
+    label_t2 = serializers.CharField(source="t2_measurement.field_number_seen",
+                                     read_only=True, default=None)
+
+    class Meta:
+        model = IntervalIdentityLink
+        fields = [
+            "id", "interval", "tree", "counterpart_tree", "plot_code",
+            "label_t1", "label_t2", "kind", "pending", "note",
+        ]
+        read_only_fields = fields
 
 
 class MeasurementImportRowSerializer(serializers.Serializer):
