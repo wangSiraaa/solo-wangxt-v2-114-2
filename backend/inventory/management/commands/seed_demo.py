@@ -157,16 +157,148 @@ BAD_ROWS_T2 = [
 ]
 
 
+# FICTIONAL 2029 (third census) rows, keyed per plot.
+#   * normal survivors remeasured (new growth on the 2024 -> 2029 link only);
+#   * P01/005 alive_not_measured in 2024 and found again in 2029 (GAP);
+#   * P02/005 missing_tree in 2024 and re-found in 2029 (GAP);
+#   * P05/006 missing 2024 and STILL missing 2029 (no fake continuity);
+#   * P01/301 a 2029 tag 1.2 m from 002 with 002 absent -> pending renumber;
+#   * P02/202 genuine 2029 ingrowth.
+ROWS_2029 = {
+    "P01": [
+        dict(plot="P01", field_number="001", species="OAK",
+             x_m=500010.0, y_m=4000010.0, status=AM,
+             dbh_raw=26.3, dbh_unit="cm", height_raw=17.5, height_unit="m"),
+        dict(plot="P01", field_number="002", species="OAK",
+             x_m=500025.0, y_m=4000012.0, status=AM,
+             dbh_raw=32.3, dbh_unit="cm", height_raw=20.0, height_unit="m"),
+        dict(plot="P01", field_number="003", species="PIN",
+             x_m=500040.0, y_m=4000018.0, status=AM,
+             dbh_raw=38.0, dbh_unit="cm", height_raw=23.7, height_unit="m"),
+        dict(plot="P01", field_number="004", species="OAK",
+             x_m=500055.0, y_m=4000020.0, status=AM,
+             dbh_raw=18.0, dbh_unit="cm", height_raw=13.5, height_unit="m",
+             notes="verified zero growth cross-check (again)"),
+        # alive-but-not-measured in 2024, located and measured in 2029:
+        # a chain hole in 2024 -> 2029, pending gap, never auto-growth.
+        dict(plot="P01", field_number="005", species="BIR",
+             x_m=500070.0, y_m=4000025.0, status=AM,
+             dbh_raw=13.3, dbh_unit="cm", height_raw=10.7, height_unit="m"),
+        dict(plot="P01", field_number="017", species="OAK",
+             x_m=500020.0, y_m=4000040.0, status=AM,
+             dbh_raw=23.9, dbh_unit="cm", height_raw=16.0, height_unit="m"),
+        dict(plot="P01", field_number="202", species="BIR",
+             x_m=500092.0, y_m=4000015.0, status=AM,
+             dbh_raw=8.8, dbh_unit="cm", height_raw=7.8, height_unit="m"),
+        # NEW tag 301 about 1.2 m from survivor 002's spot, 002 still alive
+        # at its own tag: near-neighbour renumber, pending in THIS interval.
+        dict(plot="P01", field_number="301", species="OAK",
+             x_m=500026.2, y_m=4000012.1, status=AM,
+             dbh_raw=32.0, dbh_unit="cm", height_raw=19.8, height_unit="m"),
+    ],
+    "P02": [
+        dict(plot="P02", field_number="001", species="OAK",
+             x_m=500412.0, y_m=4000014.0, status=AM,
+             dbh_raw=28.2, dbh_unit="cm", height_raw=18.0, height_unit="m"),
+        dict(plot="P02", field_number="002", species="PIN",
+             x_m=500430.0, y_m=4000020.0, status=AM,
+             dbh_raw=35.7, dbh_unit="cm", height_raw=22.5, height_unit="m"),
+        dict(plot="P02", field_number="003", species="BIR",
+             x_m=500445.0, y_m=4000033.0, status=AM,
+             dbh_raw=11.4, dbh_unit="cm", height_raw=9.8, height_unit="m"),
+        dict(plot="P02", field_number="004", species="OAK",
+             x_m=500455.0, y_m=4000040.0, status=AM,
+             dbh_raw=22.7, dbh_unit="cm", height_raw=15.5, height_unit="m"),
+        # missing_tree in 2024, re-found alive in 2029 -> GAP pending.
+        dict(plot="P02", field_number="005", species="PIN",
+             x_m=500460.0, y_m=4000055.0, status=AM,
+             dbh_raw=30.1, dbh_unit="cm", height_raw=19.6, height_unit="m"),
+        dict(plot="P02", field_number="006", species="BIR",
+             x_m=500420.0, y_m=4000050.0, status=AM,
+             dbh_raw=16.0, dbh_unit="cm", height_raw=12.2, height_unit="m"),
+        dict(plot="P02", field_number="201", species="BIR",
+             x_m=500465.0, y_m=4000030.0, status=AM,
+             dbh_raw=7.6, dbh_unit="cm", height_raw=7.0, height_unit="m"),
+        # genuine 2029 ingrowth
+        dict(plot="P02", field_number="202", species="BIR",
+             x_m=500450.0, y_m=4000058.0, status=AM,
+             dbh_raw=6.9, dbh_unit="cm", height_raw=6.6, height_unit="m"),
+    ],
+    "P03": [
+        dict(plot="P03", field_number="001", species="PIN",
+             x_m=500010.0, y_m=4000510.0, status=AM,
+             dbh_raw=34.7, dbh_unit="cm", height_raw=21.3, height_unit="m"),
+        dict(plot="P03", field_number="002", species="OAK",
+             x_m=500020.0, y_m=4000515.0, status=AM,
+             dbh_raw=23.0, dbh_unit="cm", height_raw=15.5, height_unit="m"),
+        dict(plot="P03", field_number="003", species="BIR",
+             x_m=500030.0, y_m=4000520.0, status=AM,
+             dbh_raw=12.8, dbh_unit="cm", height_raw=10.5, height_unit="m"),
+        dict(plot="P03", field_number="201", species="BIR",
+             x_m=500035.0, y_m=4000530.0, status=AM,
+             dbh_raw=5.9, dbh_unit="cm", height_raw=5.8, height_unit="m"),
+    ],
+    "P04": [
+        dict(plot="P04", field_number="001", species="OAK",
+             x_m=501015.0, y_m=4000020.0, status=AM,
+             dbh_raw=48.0, dbh_unit="cm", height_raw=26.2, height_unit="m"),
+        dict(plot="P04", field_number="002", species="OAK",
+             x_m=501035.0, y_m=4000040.0, status=AM,
+             dbh_raw=104.8, dbh_unit="cm", height_raw=35.0, height_unit="m"),
+        dict(plot="P04", field_number="003", species="PIN",
+             x_m=501055.0, y_m=4000030.0, status=AM,
+             dbh_raw=41.0, dbh_unit="cm", height_raw=24.4, height_unit="m"),
+        dict(plot="P04", field_number="004", species="BIR",
+             x_m=501070.0, y_m=4000060.0, status=AM,
+             dbh_raw=14.8, dbh_unit="cm", height_raw=11.5, height_unit="m"),
+        # alive-but-not-measured in 2024, measured again in 2029: gap.
+        dict(plot="P04", field_number="006", species="OAK",
+             x_m=501025.0, y_m=4000085.0, status=AM,
+             dbh_raw=28.4, dbh_unit="cm", height_raw=18.3, height_unit="m"),
+        dict(plot="P04", field_number="201", species="BIR",
+             x_m=501090.0, y_m=4000020.0, status=AM,
+             dbh_raw=9.3, dbh_unit="cm", height_raw=8.2, height_unit="m"),
+    ],
+    "P05": [
+        dict(plot="P05", field_number="001", species="PIN",
+             x_m=501520.0, y_m=4000025.0, status=AM,
+             dbh_raw=34.0, dbh_unit="cm", height_raw=21.5, height_unit="m"),
+        dict(plot="P05", field_number="002", species="PIN",
+             x_m=501540.0, y_m=4000045.0, status=AM,
+             dbh_raw=38.6, dbh_unit="cm", height_raw=23.8, height_unit="m"),
+        dict(plot="P05", field_number="003", species="OAK",
+             x_m=501560.0, y_m=4000030.0, status=AM,
+             dbh_raw=26.1, dbh_unit="cm", height_raw=17.1, height_unit="m"),
+        dict(plot="P05", field_number="004", species="BIR",
+             x_m=501575.0, y_m=4000070.0, status=AM,
+             dbh_raw=11.5, dbh_unit="cm", height_raw=9.9, height_unit="m"),
+        dict(plot="P05", field_number="005", species="OAK",
+             x_m=501585.0, y_m=4000085.0, status=AM,
+             dbh_raw=20.0, dbh_unit="cm", height_raw=14.0, height_unit="m"),
+        # missing in 2024 and STILL not located in 2029.
+        dict(plot="P05", field_number="006", species="BIR",
+             x_m=501530.0, y_m=4000070.0, status=MI),
+        dict(plot="P05", field_number="201", species="BIR",
+             x_m=501550.0, y_m=4000080.0, status=AM,
+             dbh_raw=7.0, dbh_unit="cm", height_raw=6.4, height_unit="m"),
+    ],
+}
+
+
 class Command(BaseCommand):
     help = "Seed fictional permanent-plot data (idempential wipe + recreate)."
 
     @transaction.atomic
     def handle(self, *args, **options):
         from inventory.models import (
-            EstimateVersion, IdentityConflict, MeasurementImportRow,
+            EstimateVersion, IdentityConflict, ImportBatch, IntervalLink,
+            MeasurementImportRow, SurveyInterval, SurveySequence,
+            SequenceMembership,
             Tree, TreeMeasurement,
         )
-        models = [EstimateVersion, IdentityConflict, MeasurementImportRow,
+        models = [EstimateVersion, IntervalLink, SurveyInterval,
+                  SequenceMembership, SurveySequence, ImportBatch,
+                  IdentityConflict, MeasurementImportRow,
                   TreeMeasurement, Tree, Plot, Campaign,
                   AllometricEquation, Species, Stratum]
         for m in models:
@@ -220,6 +352,9 @@ class Command(BaseCommand):
         t2 = Campaign.objects.create(
             code="2024", measured_on=date(2024, 7, 15),
             description="Remeasurement (fictional)")
+        t3 = Campaign.objects.create(
+            code="2029", measured_on=date(2029, 7, 18),
+            description="Third remeasurement (fictional)")
 
         plot_objs = {}
         for code, cfg in PLOTS.items():
@@ -299,6 +434,41 @@ class Command(BaseCommand):
         found = scan_conflicts(t1, t2)
         self.stdout.write(f"identity conflicts found: {len(found)}")
         for f in found:
+            self.stdout.write(
+                f"  {f['plot']}/{f['field_number']} -> "
+                f"{f.get('t2_field_number')} d={f['distance_m']}m "
+                f"[{f['hint']}]")
+
+        # ---- 2029 third census ------------------------------------------------
+        t3_rows = []
+        for code in PLOTS:
+            t3_rows.extend(ROWS_2029.get(code, []))
+        r3 = import_campaign_rows(t3, t3_rows,
+                                  settings.PLOT_AREA_TOLERANCE)
+        self.stdout.write(
+            f"t3 accepted={r3['n_accepted']} rejected={r3['n_rejected']}")
+        for bad in r3["rejected"]:
+            self.stdout.write("  REJECTED: " + bad["reason"])
+
+        # Build the ordered adjacent-interval chain 2019 -> 2024 -> 2029.
+        # Each link keeps its own coverage, identity verdicts and editions.
+        from inventory.services.sequences import (
+            create_sequence, refresh_interval,
+        )
+        seq, _ = create_sequence(
+            "MAIN", "Main fixed-plot census (fictional)",
+            ["2019", "2024", "2029"])
+        for iv in seq.intervals.order_by("ordinal"):
+            info = refresh_interval(iv)
+            self.stdout.write(
+                f"interval {info['interval']}: {info['status']} "
+                f"links={info['n_links']} pending={info['n_pending']} "
+                f"fp={info['fingerprint'][:12]}")
+
+        found29 = scan_conflicts(t2, t3)
+        self.stdout.write(
+            f"2024 -> 2029 identity items: {len(found29)}")
+        for f in found29:
             self.stdout.write(
                 f"  {f['plot']}/{f['field_number']} -> "
                 f"{f.get('t2_field_number')} d={f['distance_m']}m "

@@ -8,36 +8,59 @@ export default function EstimatePanel({ ctx }) {
   const [equations, setEquations] = useState([]);
   const [selected, setSelected] = useState([]);
   const [versions, setVersions] = useState([]);
+  const [sequences, setSequences] = useState([]);
+  const [intervals, setIntervals] = useState([]);
+  const [intervalId, setIntervalId] = useState(null);
   const [openId, setOpenId] = useState(null);
   const [detail, setDetail] = useState(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 
-  async function loadVersions() {
-    setVersions(await api.estimates());
+  async function loadVersions(iv = intervalId) {
+    setVersions(await api.estimates(iv));
   }
   useEffect(() => {
     api.equations().then((eq) => {
       setEquations(eq);
       setSelected(eq.map((e) => e.id));
     });
-    loadVersions();
+    api.sequences().then(setSequences);
+    loadVersions(null);
   }, []);
+
+  useEffect(() => {
+    if (!sequences.length) return;
+    Promise.all(sequences.map((s) => api.intervals(s.code)))
+      .then((lists) => setIntervals(lists.flat()));
+  }, [sequences]);
 
   useEffect(() => {
     if (openId == null) return;
     api.estimate(openId).then(setDetail).catch((e) => setErr(e.message));
   }, [openId]);
 
-  async function runDraft() {
+  async function runIntervalDraft() {
+    setBusy(true); setErr("");
+    try {
+      const d = await api.runIntervalEstimate(intervalId, {
+        label: `Strict draft ${new Date().toISOString().slice(0, 16)}`,
+        equation_ids: selected, fpc: true,
+      });
+      await loadVersions(intervalId);
+      setOpenId(d.id);
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(false); }
+  }
+
+  async function runLegacyDraft() {
     setBusy(true); setErr("");
     try {
       const d = await api.createEstimate({
-        label: `Draft ${new Date().toISOString().slice(0, 16)}`,
+        label: `Legacy draft ${new Date().toISOString().slice(0, 16)}`,
         t1_campaign: t1, t2_campaign: t2,
         equation_ids: selected, fpc: true,
       });
-      await loadVersions();
+      await loadVersions(intervalId);
       setOpenId(d.id);
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
@@ -47,20 +70,23 @@ export default function EstimatePanel({ ctx }) {
     setBusy(true); setErr("");
     try {
       await api.confirmEstimate(id);
-      await loadVersions();
+      await loadVersions(intervalId);
       setDetail(await api.estimate(id));
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
   }
 
+  const chosenInterval = intervals.find((i) => i.id === intervalId);
+
   return (
     <div>
-      <h2>Population estimate — stratified expansion</h2>
+      <h2>Population estimate — per adjacent interval</h2>
       <p className="hint">
-        Per-plot component ÷ each plot's own area → stratum per-hectare mean
-        → scaled by known stratum land area. Trees are never pooled, averaged
-        and multiplied by area. Δstock = survivor growth − mortality +
-        ingrowth, same allometric equation on both dates.
+        Chain links run the STRICT gap-chain estimator: identity only inside
+        one interval, missing/relabelled/contradictory trees held pending
+        and never stitched into survivor growth. The legacy two-campaign
+        draft (non-strict) remains available below; confirmed editions of
+        either kind are frozen and never rewritten.
       </p>
       {err && <div className="error">{err}</div>}
 
@@ -83,8 +109,41 @@ export default function EstimatePanel({ ctx }) {
             </span>
           </label>
         ))}
-        <button disabled={busy || !selected.length} onClick={runDraft}>
-          Run draft estimate ({t1} → {t2})
+      </section>
+
+      <section className="interval-run">
+        <h3>Chain interval (strict)</h3>
+        <select value={intervalId ?? ""}
+                onChange={(e) => {
+                  const v = e.target.value ? Number(e.target.value) : null;
+                  setIntervalId(v);
+                  setDetail(null); setOpenId(null);
+                  loadVersions(v);
+                }}>
+          <option value="">all editions (legacy + chain)</option>
+          {intervals.map((i) => <option key={i.id} value={i.id}>
+            {i.sequence_code}: {i.code} [{i.status}]
+            {i.n_pending_links ? ` · ${i.n_pending_links} pending` : ""}
+          </option>)}
+        </select>
+        <button disabled={busy || !selected.length || !intervalId}
+                onClick={runIntervalDraft}>
+          Run STRICT draft ({chosenInterval?.code})
+        </button>
+        {chosenInterval && (
+          <p className="hint">
+            coverage fp <code>
+              {chosenInterval.coverage_snapshot?.fingerprint?.slice(0, 16)}
+            </code> · {chosenInterval.n_links} identity links ·
+            {" "}{chosenInterval.n_pending_links} pending
+          </p>
+        )}
+      </section>
+
+      <section className="interval-run legacy-run">
+        <h3>Legacy two-campaign draft (non-strict)</h3>
+        <button disabled={busy || !selected.length} onClick={runLegacyDraft}>
+          Run legacy draft ({t1} → {t2})
         </button>
       </section>
 
@@ -96,6 +155,11 @@ export default function EstimatePanel({ ctx }) {
               <tr key={v.id} className={v.status}
                   onClick={() => setOpenId(v.id)}>
                 <td>#{v.id}</td><td>{v.label}</td>
+                <td>{v.interval_code
+                  ? <span className="interval-pill">
+                      {v.interval_code}
+                    </span>
+                  : <span className="legacy-pill">legacy</span>}</td>
                 <td className={`status-${v.status}`}>{v.status}</td>
                 <td>{v.confirmed_at
                   ? new Date(v.confirmed_at).toLocaleString() : ""}</td>
@@ -121,10 +185,15 @@ function EditionDetail({ v }) {
   const r = v.result_payload;
   if (!r) return null;
   const frozen = v.status === "confirmed";
+  const strict = r.provenance?.strict_gap_chain;
   return (
     <section className={`edition ${v.status}`}>
       <h3>Edition #{v.id} — {v.label}
         <span className={`badge status-${v.status}`}>{v.status}</span>
+        <span className={`badge ${strict ? "strict-badge" : "legacy-badge"}`}>
+          {strict ? `strict chain ${r.occasions.t1}→${r.occasions.t2}`
+                  : "legacy two-campaign"}
+        </span>
       </h3>
       {frozen && <p className="ok">
         Confirmed edition: result and equations are locked. A new equation
@@ -161,6 +230,20 @@ function EditionDetail({ v }) {
         </tbody>
       </table>
 
+      {strict && (
+        <div className="gap-panel">
+          <h4>Pending chain items (excluded, not guessed)</h4>
+          {r.provenance.pending_gap_reappearances.length === 0
+            ? <em>none</em>
+            : r.provenance.pending_gap_reappearances.map((g, i) => (
+              <span key={i} className="conflict-chip gap-chip">
+                {g.plot}/{g.field_number}
+                {" "}({g.gap_kind?.replace(/_/g, " ")})
+              </span>
+            ))}
+        </div>
+      )}
+
       <div className="two-col">
         <div>
           <h4>Stock reconciliation (Mg AGB)</h4>
@@ -173,6 +256,7 @@ function EditionDetail({ v }) {
           <pre>{JSON.stringify({
             estimator: r.design.estimator,
             fpc_used: r.design.fpc_used,
+            strict_gap_chain: r.provenance.strict_gap_chain,
             recruitment_dbh_cm: r.design.recruitment_dbh_cm,
             zero_growth_tolerance_cm: r.design.zero_growth_tolerance_cm,
             strata: Object.fromEntries(
@@ -184,11 +268,13 @@ function EditionDetail({ v }) {
           <h4>Provenance / data quality</h4>
           <p>same-number pairs: {r.provenance.pairs_same_number} ·
             verified renumbers: {r.provenance.pairs_verified_renumber} ·
-            open conflicts excluded:
+            open items excluded:
             {" "}{r.provenance.open_conflicts.length}</p>
           {r.provenance.open_conflicts.map((c, i) => (
-            <span key={i} className="conflict-chip">
-              {c.plot}/{c.field_number} ({c.hint}, {c.distance_m}m)
+            <span key={i} className={`conflict-chip ${
+              c.hint === "gap_reappearance" ? "gap-chip" : ""}`}>
+              {c.plot}/{c.field_number} ({c.hint.replace(/_/g, " ")}
+              {c.distance_m != null ? `, ${c.distance_m}m` : ""})
             </span>
           ))}
           <details open>

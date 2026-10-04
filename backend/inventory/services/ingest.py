@@ -33,7 +33,14 @@ from inventory.services.units import (
 
 
 @transaction.atomic
-def import_campaign_rows(campaign, rows, area_tolerance):
+def import_campaign_rows(campaign, rows, area_tolerance, batch=None):
+    """
+    Ingest one upload of field rows.
+
+    ``batch`` is an optional ImportBatch idempotency envelope; the audit row
+    for every entry (accepted or rejected) is attached to it, so a
+    retransmission or a failed retry is traceable as one upload.
+    """
     accepted, rejected = [], []
     for raw in rows:
         reason = _validate_row(raw)
@@ -73,6 +80,7 @@ def import_campaign_rows(campaign, rows, area_tolerance):
 
         row_obj = MeasurementImportRow.objects.create(
             campaign=campaign, plot=plot or Plot.objects.first(),
+            batch=batch,
             raw_payload=raw, accepted=reason is None,
             rejection_reason=reason or "",
         )

@@ -159,3 +159,42 @@ DROP TRIGGER IF EXISTS inventory_equation_freeze_trg
 CREATE TRIGGER inventory_equation_freeze_trg
 BEFORE UPDATE ON inventory_allometricequation
 FOR EACH ROW EXECUTE FUNCTION inventory_equation_freeze();
+
+-- =====================================================================
+-- Multi-campaign adjacent-interval chain (2019 -> 2024 -> 2029, ...).
+-- Identity links, coverage snapshots and estimate editions are scoped to
+-- ONE adjacent interval; these indexes/guards make that traceable.
+-- =====================================================================
+CREATE INDEX IF NOT EXISTS inventory_interval_seq_ord_idx
+  ON inventory_surveyinterval (sequence_id, ordinal);
+CREATE INDEX IF NOT EXISTS inventory_interval_ends_idx
+  ON inventory_surveyinterval (t1_campaign_id, t2_campaign_id);
+CREATE INDEX IF NOT EXISTS inventory_interval_link_interval_kind_idx
+  ON inventory_intervallink (interval_id, kind);
+CREATE INDEX IF NOT EXISTS inventory_conflict_interval_idx
+  ON inventory_identityconflict (t1_campaign_id, t2_campaign_id, hint);
+CREATE INDEX IF NOT EXISTS inventory_import_batch_campaign_uq
+  ON inventory_importbatch (campaign_id, client_batch_id);
+
+-- A confirmed EstimateVersion is frozen even if it now carries an
+-- interval_id; the freeze trigger above already covers that column set.
+-- In addition, the interval pointer of a confirmed edition can never be
+-- re-pointed (no back-filling an old edition onto a new chain link).
+CREATE OR REPLACE FUNCTION inventory_estimate_interval_freeze()
+RETURNS trigger AS $$
+BEGIN
+  IF OLD.status = 'confirmed'
+     AND NEW.interval_id IS DISTINCT FROM OLD.interval_id THEN
+    RAISE EXCEPTION
+      'EstimateVersion % is confirmed; its chain interval is immutable.',
+      OLD.id;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS inventory_estimate_interval_freeze_trg
+  ON inventory_estimateversion;
+CREATE TRIGGER inventory_estimate_interval_freeze_trg
+BEFORE UPDATE ON inventory_estimateversion
+FOR EACH ROW EXECUTE FUNCTION inventory_estimate_interval_freeze();

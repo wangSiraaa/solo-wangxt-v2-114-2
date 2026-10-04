@@ -32,7 +32,10 @@ from inventory.models import (
     STATUS_DEAD,
     STATUS_MISSING,
 )
-from inventory.services.identity import pair_measurements
+from inventory.services.identity import (
+    HINT_GAP_REAPPEARANCE,
+    pair_measurements,
+)
 
 KG_PER_MG = 1000.0
 
@@ -103,6 +106,7 @@ def build_measurement_table(t1_campaign, t2_campaign, equations_qs):
         )
         for m in qs:
             out.append({
+                "measurement_id": m.id,
                 "tree_id": m.tree_id,
                 "plot": m.tree.plot.code,
                 "species": m.tree.species.code,
@@ -122,15 +126,41 @@ def build_measurement_table(t1_campaign, t2_campaign, equations_qs):
     return rows_for(t1_campaign), rows_for(t2_campaign), equations, plots, strata
 
 
-def resolved_identity_pairs(t1_campaign, t2_campaign):
-    """Human-verified (t1_tree, t2_tree) pairs split by decision."""
+def earlier_known_tree_ids(t1_campaign, t2_campaign):
+    """
+    Tree rows with a measurement at a campaign EARLIER than this interval's
+    t1. Used by strict chain matching to spot cross-gap reappearances: a 2019
+    tree with nothing in 2024 that is re-found in 2029 is known-before, so it
+    cannot be treated as a plain 2029 ingrowth.
+    """
+    from inventory.models import TreeMeasurement
+    return set(TreeMeasurement.objects.filter(
+        campaign__measured_on__lt=t1_campaign.measured_on,
+    ).values_list("tree_id", flat=True).distinct())
+
+
+def resolved_identity_pairs(t1_campaign, t2_campaign, include_gap=False):
+    """Human-verified (t1_tree, t2_tree) pairs split by decision.
+
+    By default returns ``(renumber, distinct)`` (legacy two-tuple contract).
+    With ``include_gap=True`` returns ``(renumber, distinct, gap)``; ``gap``
+    collects human verdicts on ``gap_reappearance`` items — such a verdict
+    NEVER turns the pair into survivor growth, it only clears the pending
+    queue.
+    """
     from inventory.models import CONFLICT_DISTINCT, CONFLICT_RENUMBER, IdentityConflict
-    renumber, distinct = set(), set()
+    renumber, distinct, gap = set(), set(), set()
     qs = IdentityConflict.objects.filter(
         t1_campaign=t1_campaign, t2_campaign=t2_campaign,
     ).select_related("t1_measurement__tree", "t2_measurement__tree")
     for c in qs:
-        key = (c.t1_measurement.tree_id, c.t2_measurement.tree_id)
+        t2_tree_id = c.t2_measurement.tree_id
+        t1_tree_id = c.t1_measurement.tree_id if c.t1_measurement_id else None
+        if c.hint == HINT_GAP_REAPPEARANCE:
+            if c.status != "open":
+                gap.add((t1_tree_id, t2_tree_id))
+            continue
+        key = (t1_tree_id, t2_tree_id)
         if c.status == CONFLICT_RENUMBER:
             renumber.add(key)
         elif c.status == CONFLICT_DISTINCT:
@@ -143,6 +173,8 @@ def resolved_identity_pairs(t1_campaign, t2_campaign):
         sup = m2.tree.superseded_tree_id
         if sup:
             renumber.add((sup, m2.tree_id))
+    if include_gap:
+        return renumber, distinct, gap
     return renumber, distinct
 
 
@@ -305,6 +337,19 @@ def compute_plot_components(plot_code, plot_info, pairing, equations,
             continue
         tag = f"{plot_code}/{r1['field_number']}"
         eq = equations.get(r1["species"])
+        if r1["status"] == STATUS_DEAD:
+            # Already a mortality observation AT t1: its removal belongs to
+            # the PREVIOUS interval, never re-counted here (chain chains do
+            # not double-book mortality).
+            pc.missing_tree_ids.append(
+                {"tree": tag, "reason": "dead already at t1 — no component "
+                                        "in this interval"})
+            continue
+        if r1["status"] == STATUS_MISSING:
+            pc.missing_tree_ids.append(
+                {"tree": tag, "reason": "not located at t1 either; removal "
+                                        "cannot be quantified"})
+            continue
         if r1["status"] == STATUS_ALIVE_MEASURED and eq and _has_eq_inputs(r1, eq):
             b1 = biomass_kg([r1["dbh_cm"]], [r1["height_m"]], eq)
             pc.mortality_kg += float(b1[0])
@@ -367,10 +412,22 @@ def compute_plot_components(plot_code, plot_info, pairing, equations,
         label = (r1 or r2)["field_number"]
         pc.excluded_conflict_ids.append({
             "tree": f"{plot_code}/{label}",
+            "t1_tree": (f"{plot_code}/{r1['field_number']}"
+                        if r1 is not None else None),
+            "t2_tree": (f"{plot_code}/{r2['field_number']}"
+                        if r2 is not None else None),
             "distance_m": (None if c["distance_m"] is None
                            else round(c["distance_m"], 2)),
             "hint": c.get("hint", "same_number_position_mismatch"),
-            "reason": "unverified identity — excluded until human checks",
+            "verified_gap": bool(c.get("verified"))
+                             and c.get("hint") == HINT_GAP_REAPPEARANCE,
+            "gap_kind": c.get("gap_kind"),
+            "reason": ("gap reappearance human-checked; excluded from "
+                       "interval growth (chain hole)"
+                       if c.get("verified")
+                          and c.get("hint") == HINT_GAP_REAPPEARANCE
+                       else "unverified identity — excluded until human "
+                            "checks"),
         })
 
     # ---- ratio imputation for survivors alive-but-unmeasured at t2
@@ -423,16 +480,26 @@ def _stratum_estimate(plot_obs, area_ha, fpc=1.0):
 
 
 def estimate(table_t1, table_t2, equations, plots, strata, design,
-             resolved_renumber_pairs=None, resolved_distinct_pairs=None):
+             resolved_renumber_pairs=None, resolved_distinct_pairs=None,
+             resolved_gap_pairs=None, earlier_tree_ids=None,
+             strict_gap_chain=False):
     """
     Run the full estimator. ``design`` keys:
       dbh_sd_cm, height_sd_m, zero_tol_cm, recruitment_cm,
       interval_years, fpc (bool), crs_epsg.
+
+    ``strict_gap_chain`` defaults to False (legacy two-campaign behaviour).
+    Chain intervals pass True together with the human-verified gap pairs and
+    the set of tree rows already known BEFORE this interval's t1, so a
+    reappearance across a hole is never counted as survivor growth.
     """
     pairing = pair_measurements(
         table_t1, table_t2,
         resolved_renumber_pairs=resolved_renumber_pairs,
         resolved_distinct_pairs=resolved_distinct_pairs,
+        resolved_gap_pairs=resolved_gap_pairs,
+        earlier_tree_ids=earlier_tree_ids,
+        strict_gap_chain=strict_gap_chain,
     )
 
     pcs = [
@@ -586,18 +653,31 @@ def estimate(table_t1, table_t2, equations, plots, strata, design,
     ))
 
     # provenance / data quality listing
+    gap_items = [c for c in pairing["conflicts"]
+                 if c.get("hint") == HINT_GAP_REAPPEARANCE]
     provenance = {
         "pairs_same_number": sum(1 for p in pairing["pairs"]
                                  if p["kind"] == "same_number"),
         "pairs_verified_renumber": sum(1 for p in pairing["pairs"]
                                        if p["kind"] == "renumber"),
+        "strict_gap_chain": bool(strict_gap_chain),
         "open_conflicts": [
             {"plot": (c.get("t1") or c.get("t2"))["plot"],
              "field_number": (c.get("t1") or c.get("t2"))["field_number"],
              "distance_m": (None if c["distance_m"] is None
                             else round(c["distance_m"], 2)),
-             "hint": c.get("hint", "same_number_position_mismatch")}
+             "hint": c.get("hint", "same_number_position_mismatch"),
+             "verified": bool(c.get("verified"))}
             for c in pairing["conflicts"]
+        ],
+        "pending_gap_reappearances": [
+            {"plot": (c.get("t1") or c.get("t2"))["plot"],
+             "field_number": (c.get("t1") or c.get("t2"))["field_number"],
+             "distance_m": (None if c["distance_m"] is None
+                            else round(c["distance_m"], 2)),
+             "gap_kind": c.get("gap_kind"),
+             "verified": bool(c.get("verified"))}
+            for c in gap_items
         ],
         "plots": [_pc_provenance(pc) for pc in pcs],
     }

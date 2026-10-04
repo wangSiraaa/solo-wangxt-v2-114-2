@@ -3,11 +3,13 @@ import { api } from "../api.js";
 
 /**
  * Human-in-the-loop identity workbench.
- * A same number with contradictory positions is NEVER auto-merged: it must
- * be verified here as either "renumber" (same individual, new tag) or
- * "distinct" (different individuals -> t1 removal + t2 ingrowth).
+ * Every item is scoped to ONE adjacent interval. A same number with
+ * contradictory positions, a near-neighbour relabel, or a tree reappearing
+ * after a missing occasion is never treated as the same individual until a
+ * human verifies it here. A gap verdict keeps the tree EXCLUDED — verifying
+ * does not invent the missing occasion.
  */
-export default function ConflictsWorkbench({ ctx, onChanged }) {
+export default function ConflictsWorkbench({ onChanged }) {
   const [all, setAll] = useState([]);
   const [busy, setBusy] = useState(null);
   const [note, setNote] = useState("");
@@ -22,8 +24,11 @@ export default function ConflictsWorkbench({ ctx, onChanged }) {
     setBusy(c.id);
     setErr("");
     try {
-      await api.resolveConflict(c.id, { status: decision, note });
-      setNote(`#${c.id} (${c.field_number}) recorded as ${decision}`);
+      const out = await api.resolveConflict(c.id, { status: decision, note });
+      setNote(`#${c.id} (${c.field_number}) recorded as ${decision}`
+        + (out.rebuilt_intervals?.length
+          ? `; rebuilt ${out.rebuilt_intervals.map((r) => r.interval)
+              .join(", ")}` : ""));
       await load();
       onChanged?.();
     } catch (e) {
@@ -35,43 +40,61 @@ export default function ConflictsWorkbench({ ctx, onChanged }) {
 
   return (
     <div>
-      <h2>Identity verification workbench</h2>
+      <h2>Identity verification workbench
+        <small> per-interval chain items only</small>
+      </h2>
       <p className="hint">
-        Same field number with contradictory positions, or a new number at a
-        familiar position. Nothing here is treated as the same individual
-        until verified.
+        Each row belongs to exactly one adjacent interval (shown). A
+        cross-gap reappearance (missing 2024, found 2029) stays excluded
+        even after verification — it is never counted as survivor growth.
       </p>
       {note && <div className="ok">{note}</div>}
       {err && <div className="error">{err}</div>}
       <table className="conflict-table">
         <thead>
-          <tr><th>plot</th><th>number</th><th>distance</th>
-          <th>state</th><th>verification</th></tr>
+          <tr><th>interval</th><th>plot</th><th>number</th>
+            <th>distance</th><th>reason</th><th>state</th>
+            <th>verification</th></tr>
         </thead>
         <tbody>
-          {all.map((c) => (
-            <tr key={c.id} className={c.status === "open" ? "open" : "closed"}>
-              <td>{c.plot}</td>
-              <td>{c.field_number}</td>
-              <td>{c.distance_m?.toFixed(2)} m</td>
-              <td>{c.status}{c.resolution_note
+          {all.map((c) => {
+            const isGap = c.hint === "gap_reappearance";
+            return (
+              <tr key={c.id}
+                  className={c.status === "open" ? "open" : "closed"}>
+                <td className="interval-tag">
+                  {c.t1_campaign_code} → {c.t2_campaign_code}
+                </td>
+                <td>{c.plot_code}</td>
+                <td>{c.field_number}</td>
+                <td>{c.distance_m == null
+                  ? "—" : `${c.distance_m?.toFixed(2)} m`}</td>
+                <td className="hint-cell">
+                  <code>{c.hint.replace(/_/g, " ")}</code>
+                  {isGap && <div className="gap-note">
+                    gap: verification excludes only; never auto-growth
+                  </div>}
+                </td>
+                <td>{c.status}{c.resolution_note
                   ? ` — ${c.resolution_note}` : ""}</td>
-              <td>
-                {c.status === "open" ? (
-                  <>
-                    <button disabled={busy === c.id}
-                            onClick={() => resolve(c, "renumber")}>
-                      same tree, renumbered
-                    </button>
-                    <button className="danger" disabled={busy === c.id}
-                            onClick={() => resolve(c, "distinct")}>
-                      different trees
-                    </button>
-                  </>
-                ) : <span className="locked">verified {c.status}</span>}
-              </td>
-            </tr>
-          ))}
+                <td>
+                  {c.status === "open" ? (
+                    <>
+                      <button disabled={busy === c.id}
+                              onClick={() => resolve(c, "renumber")}>
+                        {isGap ? "verified reappearance (excluded)"
+                               : "same tree, renumbered"}
+                      </button>
+                      <button className="danger" disabled={busy === c.id}
+                              onClick={() => resolve(c, "distinct")}>
+                        different trees
+                      </button>
+                    </>
+                  ) : <span className="locked">verified {c.status}</span>}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

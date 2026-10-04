@@ -23,12 +23,37 @@ export const api = {
     get(`/measurements/?campaign=${encodeURIComponent(campaign)}`),
   campaigns: () => get("/campaigns/"),
   equations: () => get("/equations/"),
-  conflicts: (status) =>
-    get(`/conflicts/${status ? `?status=${status}` : ""}`),
+  conflicts: (status, interval) => {
+    const q = new URLSearchParams();
+    if (status) q.set("status", status);
+    if (interval) q.set("interval", interval);
+    const s = q.toString();
+    return get(`/conflicts/${s ? `?${s}` : ""}`);
+  },
   resolveConflict: (id, payload) =>
     post(`/conflicts/${id}/resolve/`, payload),
-  estimates: () => get("/estimates/"),
+  estimates: (intervalId) =>
+    get(`/estimates/${intervalId ? `?interval=${intervalId}` : ""}`),
   estimate: (id) => get(`/estimates/${id}/`),
   createEstimate: (payload) => post("/estimates/", payload),
   confirmEstimate: (id) => post(`/estimates/${id}/confirm/`),
+
+  // multi-campaign chains
+  sequences: () => get("/sequences/"),
+  createSequence: (payload) => post("/sequences/", payload),
+  addCampaigns: (id, campaigns) =>
+    post(`/sequences/${id}/add_campaigns/`, { campaigns }),
+  intervals: (sequence) =>
+    get(`/intervals/${sequence ? `?sequence=${sequence}` : ""}`),
+  interval: (id) => get(`/intervals/${id}/`),
+  refreshInterval: (id) => post(`/intervals/${id}/refresh/`),
+  intervalProvenance: (id) => get(`/intervals/${id}/provenance/`),
+  runIntervalEstimate: (id, payload) =>
+    post(`/intervals/${id}/estimates/`, payload),
+  plotTimeline: (sequence, plot) =>
+    get(`/timeline/?sequence=${encodeURIComponent(sequence)}`
+        + `&plot=${encodeURIComponent(plot)}`),
+  treeTimeline: (sequence, treeId) =>
+    get(`/timeline/?sequence=${encodeURIComponent(sequence)}`
+        + `&tree=${treeId}`),
 };

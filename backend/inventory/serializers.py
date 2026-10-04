@@ -5,9 +5,13 @@ from inventory.models import (
     Campaign,
     EstimateVersion,
     IdentityConflict,
+    ImportBatch,
+    IntervalLink,
     Plot,
     Species,
     Stratum,
+    SurveyInterval,
+    SurveySequence,
     Tree,
     TreeMeasurement,
 )
@@ -93,14 +97,21 @@ class MeasurementSerializer(serializers.ModelSerializer):
 
 
 class ConflictSerializer(serializers.ModelSerializer):
+    t1_campaign_code = serializers.CharField(
+        source="t1_campaign.code", read_only=True)
+    t2_campaign_code = serializers.CharField(
+        source="t2_campaign.code", read_only=True)
+    plot_code = serializers.CharField(source="plot.code", read_only=True)
+
     class Meta:
         model = IdentityConflict
         fields = [
-            "id", "plot", "field_number", "t1_campaign", "t2_campaign",
-            "t1_measurement", "t2_measurement", "distance_m",
-            "status", "resolution_note", "resolved_at",
+            "id", "plot", "plot_code", "field_number",
+            "t1_campaign", "t2_campaign", "t1_campaign_code",
+            "t2_campaign_code", "t1_measurement", "t2_measurement",
+            "distance_m", "hint", "status", "resolution_note", "resolved_at",
         ]
-        read_only_fields = ["distance_m", "resolved_at"]
+        read_only_fields = ["distance_m", "resolved_at", "hint"]
 
 
 class ConflictResolveSerializer(serializers.Serializer):
@@ -109,10 +120,14 @@ class ConflictResolveSerializer(serializers.Serializer):
 
 
 class EstimateVersionSerializer(serializers.ModelSerializer):
+    interval_id = serializers.IntegerField(read_only=True)
+    interval_code = serializers.SerializerMethodField()
+
     class Meta:
         model = EstimateVersion
         fields = [
-            "id", "label", "t1_campaign", "t2_campaign", "status",
+            "id", "label", "t1_campaign", "t2_campaign", "interval_id",
+            "interval_code", "status",
             "design_snapshot", "result_payload", "equation_checksum",
             "created_at", "confirmed_at",
         ]
@@ -120,6 +135,11 @@ class EstimateVersionSerializer(serializers.ModelSerializer):
             "status", "design_snapshot", "result_payload",
             "equation_checksum", "confirmed_at",
         ]
+
+    def get_interval_code(self, obj):
+        if obj.interval_id:
+            return f"{obj.t1_campaign.code}->{obj.t2_campaign.code}"
+        return None
 
 
 class MeasurementImportRowSerializer(serializers.Serializer):
@@ -148,4 +168,115 @@ class MeasurementImportRowSerializer(serializers.Serializer):
 
 class MeasurementImportSerializer(serializers.Serializer):
     campaign = serializers.CharField()
+    # Optional client idempotency key. Same campaign + same key returns the
+    # stored batch instead of re-creating trees / conflicts / interval links.
+    client_batch_id = serializers.CharField(
+        required=False, allow_blank=False, max_length=120)
     rows = MeasurementImportRowSerializer(many=True)
+
+
+# ------------------------------------------------------------- multi-campaign
+class SequenceSerializer(serializers.ModelSerializer):
+    campaigns = serializers.SerializerMethodField()
+    n_intervals = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SurveySequence
+        fields = ["id", "code", "name", "status", "campaigns",
+                  "n_intervals", "created_at"]
+
+    def get_campaigns(self, obj):
+        return [
+            {"code": m.campaign.code,
+             "measured_on": m.campaign.measured_on.isoformat(),
+             "position": m.position}
+            for m in sorted(obj.memberships.select_related("campaign"),
+                            key=lambda m: m.position)
+        ]
+
+    def get_n_intervals(self, obj):
+        return obj.intervals.count()
+
+
+class SequenceCreateSerializer(serializers.Serializer):
+    code = serializers.CharField(max_length=32)
+    name = serializers.CharField(max_length=160, required=False,
+                                 allow_blank=True)
+    campaigns = serializers.ListField(
+        child=serializers.CharField(), allow_empty=False)
+    status = serializers.ChoiceField(["active", "closed"], required=False)
+
+
+class SequenceAddCampaignsSerializer(serializers.Serializer):
+    campaigns = serializers.ListField(
+        child=serializers.CharField(), allow_empty=False)
+
+
+class IntervalLinkSerializer(serializers.ModelSerializer):
+    plot_code = serializers.CharField(source="plot.code", read_only=True)
+
+    class Meta:
+        model = IntervalLink
+        fields = [
+            "id", "plot", "plot_code", "t1_tree", "t2_tree",
+            "t1_measurement", "t2_measurement",
+            "t1_field_number", "t2_field_number",
+            "kind", "determination", "excluded_from_components",
+            "conflict", "detail", "created_at",
+        ]
+
+
+class IntervalEstimateSummarySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EstimateVersion
+        fields = ["id", "label", "status", "created_at", "confirmed_at"]
+
+
+class IntervalSerializer(serializers.ModelSerializer):
+    sequence_code = serializers.CharField(source="sequence.code", read_only=True)
+    t1_code = serializers.CharField(source="t1_campaign.code", read_only=True)
+    t2_code = serializers.CharField(source="t2_campaign.code", read_only=True)
+    code = serializers.SerializerMethodField()
+    n_links = serializers.SerializerMethodField()
+    n_pending_links = serializers.SerializerMethodField()
+    estimate_versions = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SurveyInterval
+        fields = [
+            "id", "code", "sequence", "sequence_code", "ordinal",
+            "t1_campaign", "t2_campaign", "t1_code", "t2_code", "status",
+            "coverage_snapshot", "built_at", "created_at",
+            "n_links", "n_pending_links", "estimate_versions",
+        ]
+
+    def get_code(self, obj):
+        return obj.code
+
+    def get_n_links(self, obj):
+        return obj.links.count()
+
+    def get_n_pending_links(self, obj):
+        from inventory.models import PENDING_LINK_KINDS
+        return obj.links.filter(kind__in=PENDING_LINK_KINDS).count()
+
+    def get_estimate_versions(self, obj):
+        return IntervalEstimateSummarySerializer(
+            obj.estimate_versions.all(), many=True).data
+
+
+class IntervalEstimateRunSerializer(serializers.Serializer):
+    label = serializers.CharField(required=False, allow_blank=True)
+    equation_ids = serializers.ListField(
+        child=serializers.IntegerField(), allow_empty=False)
+    fpc = serializers.BooleanField(required=False, default=True)
+
+
+class ImportBatchSerializer(serializers.ModelSerializer):
+    campaign_code = serializers.CharField(source="campaign.code", read_only=True)
+
+    class Meta:
+        model = ImportBatch
+        fields = ["id", "campaign", "campaign_code", "client_batch_id",
+                  "payload_fingerprint", "n_rows", "result_summary",
+                  "created_at"]

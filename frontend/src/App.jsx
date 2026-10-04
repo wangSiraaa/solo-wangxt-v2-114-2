@@ -4,8 +4,9 @@ import PlotMap from "./components/PlotMap.jsx";
 import PlotDetail from "./components/PlotDetail.jsx";
 import ConflictsWorkbench from "./components/ConflictsWorkbench.jsx";
 import EstimatePanel from "./components/EstimatePanel.jsx";
+import Timeline from "./components/Timeline.jsx";
 
-const TABS = ["map", "conflicts", "estimates"];
+const TABS = ["map", "timeline", "conflicts", "estimates"];
 
 export default function App() {
   const [tab, setTab] = useState("map");
@@ -32,6 +33,8 @@ export default function App() {
         const ordered = [...cs].sort((a, b) =>
           a.measured_on.localeCompare(b.measured_on));
         if (ordered.length >= 2) {
+          // Legacy map/detail view compares the first and last campaign;
+          // the timeline tab is where the adjacent chain is modelled.
           setT1(ordered[0].code);
           setT2(ordered[ordered.length - 1].code);
         }
@@ -68,7 +71,7 @@ export default function App() {
             </span>
           ))}
           <span className="chip warn-chip">
-            {conflicts.length} open identity conflict
+            {conflicts.length} open identity item
             {conflicts.length === 1 ? "" : "s"}
           </span>
         </div>
@@ -81,7 +84,8 @@ export default function App() {
           <button key={t} className={tab === t ? "tab active" : "tab"}
                   onClick={() => setTab(t)}>
             {t === "map" ? "Plots & individuals"
-              : t === "conflicts" ? `Identity conflicts (${conflicts.length})`
+              : t === "timeline" ? "Multi-campaign timeline"
+              : t === "conflicts" ? `Identity items (${conflicts.length})`
               : "Estimates"}
           </button>
         ))}
@@ -94,6 +98,7 @@ export default function App() {
                           onBack={() => setSelectedPlot(null)} />
             : <PlotMap ctx={ctx} onSelect={setSelectedPlot} />
         )}
+        {tab === "timeline" && <Timeline ctx={ctx} />}
         {tab === "conflicts" && (
           <ConflictsWorkbench ctx={ctx}
                               onChanged={async () => {
@@ -106,6 +111,7 @@ export default function App() {
       <footer>
         Fictional demonstration data · coordinates EPSG:{plots[0]?.crs_epsg}
         {" "}· dbh cm (raw unit retained) · height m · areas in hectares
+        {" "}· adjacent-interval chain (no cross-gap stitching)
       </footer>
     </div>
   );
